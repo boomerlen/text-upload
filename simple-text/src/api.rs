@@ -1,22 +1,31 @@
 use actix_web::{web, HttpResponse, Responder};
+use git2::Repository;
+use serde::Deserialize;
 
-use crate::git_management::{Mono, modify_buffer, commit_buffer};
+use crate::git_management::{add_buffer, commit_buffer, modify_buffer, open_repo, push_to_repo};
 
-fn split_post_body(req_body: String) -> (String, String) {
-    (String::from("buffname"), String::from("bufftext"))
+#[derive(Deserialize)]
+struct PostBody {
+    buffer: String,
+    text: String,
 }
 
-async fn upload_text(req_body: String, data: web::Data<Mono>) -> impl Responder {
-    let response_text: String = format!("Message received! Post text: {}", req_body);
+async fn upload_text(req_body: web::Json<PostBody>) -> impl Responder {
+    // TODO: error handling along the way
+    // Should not reutn Ok if it's not Ok.
+    let response_text: String = format!("Message received! Post text: {}", req_body.text);
 
     // Use magic function to extract data from body
-    let (buf_name, buf_text) = split_post_body(req_body);
+    let buf_name = &req_body.buffer;
+    let buf_text = &req_body.text;
 
-    modify_buffer(&buf_name, &buf_text);
-    commit_buffer(&buf_name, &data);
+    let repo: Repository = open_repo();
 
-    // Note: no semicolon after this line because it is an expression
-    // and we want to return its result
+    modify_buffer(buf_name, buf_text);
+    add_buffer(buf_name, &repo);
+    commit_buffer(&repo);
+    push_to_repo(&repo);
+
     HttpResponse::Ok().body(response_text)
 }
 
@@ -25,11 +34,9 @@ async fn basic_get() -> impl Responder {
 }
 
 pub fn config_simple_text(cfg: &mut web::ServiceConfig) {
-    // Contrast to line 8 - this function does not return
-    // anything so we make the following line into a statement with the semicolon
     cfg.service(
         web::scope("/api")
             .route("/simple-text", web::post().to(upload_text))
-            .route("/simple-text", web::get().to(basic_get))
+            .route("/simple-text", web::get().to(basic_get)),
     );
 }
