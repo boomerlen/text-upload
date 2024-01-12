@@ -1,14 +1,15 @@
 mod api;
 mod git_management;
+mod config;
 
-use actix_web::{App, HttpServer};
+use actix_web::{App, HttpServer, web};
 
 pub use crate::api::config_simple_text;
 
 // Still todo:
-// Add configuration file for better flexibility
 // Improve testing
 // Add TLS / authentication so not just anyone can commit to my mono lol
+
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
