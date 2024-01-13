@@ -32,27 +32,27 @@ async fn upload_text(req_body: web::Json<PostBody>) -> impl Responder {
 
     let repo: Repository = match open_repo() {
         Ok(r) => r,
-        Err(_) => return HttpResponse::InternalServerError().body("Oopen repo failed."),
+        Err(e) => return HttpResponse::InternalServerError().body(format!("Oopen repo failed with git error code {:?}.", e.code())),
     };
 
     match modify_buffer(&buf_name, buf_text) {
         Ok(_) => (),
-        Err(_) => return HttpResponse::InternalServerError().body("Modify buffer failed."),
+        Err(e) => return HttpResponse::InternalServerError().body(format!("Modify buffer failed with git error code {:?}.", e.code())),
     };
 
     match add_buffer(&buf_name, &repo) {
         Ok(_) => (),
-        Err(_) => return HttpResponse::InternalServerError().body("Add buffer failed."),
+        Err(e) => return HttpResponse::InternalServerError().body(format!("Add buffer failed with git error code {:?}.", e.code())),
     };
 
     match commit_buffer(&repo) {
         Ok(_) => (),
-        Err(_) => return HttpResponse::InternalServerError().body("Commit buffer failed."),
+        Err(e) => return HttpResponse::InternalServerError().body(format!("Commit buffer failed with git error code {:?}", e.code())),
     };
 
     match push_to_repo(&repo) {
         Ok(_) => HttpResponse::Ok().body("Success!"),
-        Err(_) => HttpResponse::InternalServerError().body("Push failed."),
+        Err(e) => HttpResponse::InternalServerError().body(format!("Push failed with git error code {:?}.", e.code())),
     }
 }
 

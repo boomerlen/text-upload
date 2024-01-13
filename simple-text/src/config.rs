@@ -10,6 +10,9 @@ use std::io::Read;
 use std::path::Path;
 use std::fs::File;
 
+// Use git2 errors throughout just makes life a lot easier
+use git2::Error;
+
 #[derive(Deserialize)]
 pub struct Config {
     pub url: String,
@@ -21,12 +24,18 @@ pub struct Config {
 
 pub const DFT_CONF_PATH: &str = "conf.toml";
 
-pub fn get_config(conf_file: &Path) -> Result<Config, std::io::Error> {
+pub fn get_config(conf_file: &Path) -> Result<Config, git2::Error> {
     // Open file
-    let mut file = File::open(conf_file)?;
+    let mut file = match File::open(conf_file) {
+        Ok(f) => f,
+        Err(why) => return Err(Error::from_str(format!("Could not open conf file with error: {}.", why.to_string()).as_str())),
+    };
 
     let mut conf_text = String::new();
-    file.read_to_string(&mut conf_text)?;
+    match file.read_to_string(&mut conf_text) {
+        Ok(_) => (),
+        Err(why) => return Err(Error::from_str(format!("Could not read config file with error: {}.", why.to_string()).as_str())),
+    }
 
     // Parse
     let conf: Config = match toml::from_str(conf_text.as_str()) {
@@ -37,11 +46,12 @@ pub fn get_config(conf_file: &Path) -> Result<Config, std::io::Error> {
     Ok(conf)
 }
 
+#[cfg(test)]
 mod tests {
-    // use crate::config::Config;
-    // use std::fs::File;
-    // use std::io::Write;
-    // use std::path::Path;
+    use crate::config::Config;
+    use std::fs::File;
+    use std::io::Write;
+    use std::path::Path;
 
     #[test]
     fn test_parse_config() {

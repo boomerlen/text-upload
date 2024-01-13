@@ -4,7 +4,6 @@ use std::path::Path;
 use std::process::Command;
 use std::env;
 use chrono::{Local};
-use std::fmt;
 
 use git2::{BranchType, Cred, PushOptions, Remote, RemoteCallbacks, Repository, Signature, Tree};
 
@@ -12,16 +11,7 @@ use crate::config::{Config, get_config, DFT_CONF_PATH};
 
 // Error management to concatenate many possible error sources into a single handleable error
 // Using this type loses original error origin. Should fix
-type Result<T> = std::result::Result<T, GitActionError>;
-
-#[derive(Debug, Clone)]
-pub struct GitActionError;
-
-impl fmt::Display for GitActionError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "git action failed")
-    }
-}
+type Result<T> = std::result::Result<T, git2::Error>;
 
 fn decrypt(file: &Path) {
     Command::new("unscramble ")
@@ -47,10 +37,7 @@ pub fn get_now() -> String {
 }
 
 pub fn push_to_repo(repo: &Repository) -> Result<()> {
-    let conf: Config = match get_config(Path::new(&get_dft_conf())) {
-        Ok(c) => c,
-        Err(_) => return Err(GitActionError),
-    };
+    let conf: Config = get_config(Path::new(&get_dft_conf()))?;
     
     // Prepare callbacks
     let ssh_key_str: &String = &conf.ssh_file;
@@ -68,28 +55,21 @@ pub fn push_to_repo(repo: &Repository) -> Result<()> {
     // https://docs.rs/git2/latest/git2/build/struct.RepoBuilder.html
     let mut binding = PushOptions::new();
     let push_options = binding.remote_callbacks(callbacks);
-    let mut remote: Remote = match repo.find_remote("origin") {
-        Ok(r) => r,
-        Err(_) => return Err(GitActionError),
-    };
+    let mut remote: Remote = repo.find_remote("origin")?;
 
     // Assume the branch name is the same on the host and the remote
     let refspec = format!("refs/heads/{}:refs/heads/{}", conf.branch, conf.branch);
 
-    match remote.push(&[refspec], Some(push_options)) {
-        Ok(_) => Ok(()),
-        Err(_) => Err(GitActionError)
-    }
+    remote.push(&[refspec], Some(push_options))?;
+
+    Ok(())
 }
 
 fn clone_repo() -> Result<Repository> {
     // Largely based on example
     // https://docs.rs/git2/latest/git2/build/struct.RepoBuilder.html
 
-    let conf: Config = match get_config(Path::new(&get_dft_conf())) {
-        Ok(c) => c,
-        Err(_) => return Err(GitActionError),
-    };
+    let conf: Config = get_config(Path::new(&get_dft_conf()))?;
 
     // "Prepare callbacks"
     let ssh_key_str: &String = &conf.ssh_file;
@@ -112,54 +92,33 @@ fn clone_repo() -> Result<Repository> {
 
     match builder.clone(&conf.url, Path::new(&conf.local_dir)) {
         Ok(r) => Ok(r),
-        Err(_) => Err(GitActionError),
+        Err(e) => Err(e),
     }
 }
 
 pub fn open_repo() -> Result<Repository> {
-    let conf: Config = match get_config(Path::new(&get_dft_conf())) {
-        Ok(c) => c,
-        Err(_) => return Err(GitActionError),
-    };
+    let conf: Config = get_config(Path::new(&get_dft_conf()))?;
 
     let repo_dir: &Path = Path::new(&conf.local_dir);
 
     // Check firstly if we already have the repo cloned
     let repo = match Repository::open(repo_dir) {
         Ok(repo) => repo,
-        Err(_) => {
-            // If error is relevant (?) clone dir
-            match clone_repo() {
-                Ok(r) => r,
-                Err(_) => return Err(GitActionError),
-            }
-        }
+        Err(_) => clone_repo()?,
     };
 
     // Ensure branch is correct
-    match repo.find_branch(&conf.branch, BranchType::Remote) {
-        Ok(branch) => branch,
-        Err(_) => return Err(GitActionError),
-    };
+    repo.find_branch(&conf.branch, BranchType::Remote)?;
 
     // Change head before this
-    match repo.set_head(&conf.branch) {
-        Ok(_) => (),
-        Err(_) => return Err(GitActionError),
-    };
-    match repo.checkout_head(None) {
-        Ok(_) => (),
-        Err(_) => return Err(GitActionError),
-    };
+    repo.set_head(&conf.branch)?;
+    repo.checkout_head(None)?;
 
     Ok(repo)
 }
 
 pub fn modify_buffer(buf_name: &String, buf_text: &String) -> Result<()> {
-    let conf: Config = match get_config(Path::new(&get_dft_conf())) {
-        Ok(c) => c,
-        Err(_) => return Err(GitActionError),
-    };
+    let conf: Config = get_config(Path::new(&get_dft_conf()))?;
 
     let buf_path_str = format!(
         "{}/{}/{}",
@@ -175,12 +134,12 @@ pub fn modify_buffer(buf_name: &String, buf_text: &String) -> Result<()> {
         .append(true)
         .open(buf_path) {
             Ok(f) => f,
-            Err(_) => return Err(GitActionError),
+            Err(_) => return Err(git2::Error::from_str("Failed to open buffer.")),
         };
 
     match file.write(&format!("\n{}\n", buf_text).as_bytes()) {
         Ok(_) => (),
-        Err(_) => return Err(GitActionError),
+        Err(_) => return Err(git2::Error::from_str("Failed to write to buffer.")),
     }
 
     encrypt(buf_path);
@@ -189,15 +148,9 @@ pub fn modify_buffer(buf_name: &String, buf_text: &String) -> Result<()> {
 }
 
 pub fn add_buffer(buf_name: &String, repo: &Repository) -> Result<()> {
-    let conf: Config = match get_config(Path::new(&get_dft_conf())) {
-        Ok(c) => c,
-        Err(_) => return Err(GitActionError),
-    };
+    let conf: Config = get_config(Path::new(&get_dft_conf()))?;
 
-    let mut index = match repo.index() {
-        Ok(i) => i,
-        Err(_) => return Err(GitActionError),
-    };
+    let mut index = repo.index()?;
 
     let buf_path_str = format!(
         "{}/{}/{}",
@@ -207,41 +160,22 @@ pub fn add_buffer(buf_name: &String, repo: &Repository) -> Result<()> {
     );
 
     let buf_path = Path::new(&buf_path_str);
-    match index.add_path(buf_path) {
-        Ok(_) => Ok(()),
-        Err(_) => Err(GitActionError),
-    }
+    index.add_path(buf_path)?;
+
+    Ok(())
 }
 
 
 pub fn commit_buffer(repo: &Repository) -> Result<()> {
     // Inspired by https://github.com/rust-lang/git2-rs/issues/561
     // Should look at replacing match statemnts with some sort of macro
-    let mut index = match repo.index() { 
-        Ok(i) => i,
-        Err(_) => return Err(GitActionError),
-    };
-    let oid = match index.write_tree() {
-        Ok(oid) => oid,
-        Err(_) => return Err(GitActionError),
-    };
-    let curr_tree: Tree = match repo.find_tree(oid) {
-        Ok(t) => t,
-        Err(_) => return Err(GitActionError),
-    };
-    let author: Signature = match repo.signature() {
-        Ok(sig) => sig,
-        Err(_) => return Err(GitActionError),
-    };
+    let mut index = repo.index()?;
+    let oid = index.write_tree()?;
+    let curr_tree: Tree = repo.find_tree(oid)?;
+    let author: Signature = repo.signature()?;
     let message: &str = &get_now();
-    let parent_ref = match repo.head() {
-        Ok(h) => h,
-        Err(_) => return Err(GitActionError),
-    };
-    let parent_commit = match parent_ref.peel_to_commit() {
-        Ok(c) => c,
-        Err(_) => return Err(GitActionError),
-    };
+    let parent_ref = repo.head()?;
+    let parent_commit = parent_ref.peel_to_commit()?;
 
     match repo.commit(
         Some("HEAD"),
@@ -252,7 +186,7 @@ pub fn commit_buffer(repo: &Repository) -> Result<()> {
         &[&parent_commit],
     ) {
         Ok(_) => Ok(()),
-        Err(_) => Err(GitActionError),
+        Err(e) => Err(e),
     }
 }
 
@@ -269,6 +203,8 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
     use std::env;
+
+    use super::push_to_repo;
 
     fn write_test_config() {
         let test_config_toml = format!(r#"
@@ -289,7 +225,7 @@ mod tests {
     #[test]
     fn test_clone_repo() {
         write_test_config();
-        clone_repo();
+        clone_repo().unwrap();
     } 
 
     #[test]
@@ -300,20 +236,40 @@ mod tests {
     }
 
     #[test]
-    fn test_modify_buffer() {
+    fn test_modify_buffer_new() {
         write_test_config();
-        assert!(true);
+        let buf_name = String::from("sample_new_buffer");
+        let buf_text = String::from("new added text!");
+        modify_buffer(&buf_name, &buf_text).unwrap()
+    }
+
+    #[test]
+    fn test_modify_buffer_existing() {
+        write_test_config();
+        let buf_name = String::from("Places");
+        let buf_text = String::from("extra text!");
+        modify_buffer(&buf_name, &buf_text).unwrap();
     }
 
     #[test]
     fn test_add() {
         write_test_config();
-        assert!(true);
+        let buf_name = String::from("Places");
+        let repo = open_repo().unwrap();
+        add_buffer(&buf_name, &repo).unwrap();
     }
 
     #[test]
     fn test_commit() {
         write_test_config();
-        assert!(true);
+        let repo = open_repo().unwrap();
+        commit_buffer(&repo).unwrap();
+    }
+
+    #[test]
+    fn test_push() {
+        write_test_config();
+        let repo = open_repo().unwrap();
+        push_to_repo(&repo).unwrap();
     }
 }
