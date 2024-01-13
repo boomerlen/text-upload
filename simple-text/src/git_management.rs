@@ -2,6 +2,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
+use std::env;
 use chrono::{Local};
 use std::fmt;
 
@@ -11,10 +12,10 @@ use crate::config::{Config, get_config, DFT_CONF_PATH};
 
 // Error management to concatenate many possible error sources into a single handleable error
 // Using this type loses original error origin. Should fix
-type Result<T> = std::result::Result<T, GitActionError>
+type Result<T> = std::result::Result<T, GitActionError>;
 
 #[derive(Debug, Clone)]
-struct GitActionError;
+pub struct GitActionError;
 
 impl fmt::Display for GitActionError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -36,13 +37,17 @@ fn encrypt(file: &Path) {
     .expect("Could not unscramble");
 }
 
+pub fn get_dft_conf() -> String {
+    format!("{}/.simple-text/{}", env::var("HOME").unwrap(), DFT_CONF_PATH)
+}
+
 pub fn get_now() -> String {
     let local_time = Local::now();
     format!("{}", local_time.format("%d_%b_%y-%H_%M"))
 }
 
 pub fn push_to_repo(repo: &Repository) -> Result<()> {
-    let conf: Config = match get_config(Path::new(DFT_CONF_PATH)) {
+    let conf: Config = match get_config(Path::new(&get_dft_conf())) {
         Ok(c) => c,
         Err(_) => return Err(GitActionError),
     };
@@ -77,11 +82,11 @@ pub fn push_to_repo(repo: &Repository) -> Result<()> {
     }
 }
 
-fn clone_repo(repo_dir: &Path) -> Result<Repository> {
+fn clone_repo() -> Result<Repository> {
     // Largely based on example
     // https://docs.rs/git2/latest/git2/build/struct.RepoBuilder.html
 
-    let conf: Config = match get_config(Path::new(DFT_CONF_PATH)) {
+    let conf: Config = match get_config(Path::new(&get_dft_conf())) {
         Ok(c) => c,
         Err(_) => return Err(GitActionError),
     };
@@ -105,14 +110,14 @@ fn clone_repo(repo_dir: &Path) -> Result<Repository> {
     let mut builder = git2::build::RepoBuilder::new();
     builder.fetch_options(fo);
 
-    match builder.clone(&conf.url, repo_dir) {
+    match builder.clone(&conf.url, Path::new(&conf.local_dir)) {
         Ok(r) => Ok(r),
         Err(_) => Err(GitActionError),
     }
 }
 
 pub fn open_repo() -> Result<Repository> {
-    let conf: Config = match get_config(Path::new(DFT_CONF_PATH)) {
+    let conf: Config = match get_config(Path::new(&get_dft_conf())) {
         Ok(c) => c,
         Err(_) => return Err(GitActionError),
     };
@@ -124,7 +129,7 @@ pub fn open_repo() -> Result<Repository> {
         Ok(repo) => repo,
         Err(_) => {
             // If error is relevant (?) clone dir
-            match clone_repo(repo_dir) {
+            match clone_repo() {
                 Ok(r) => r,
                 Err(_) => return Err(GitActionError),
             }
@@ -151,15 +156,16 @@ pub fn open_repo() -> Result<Repository> {
 }
 
 pub fn modify_buffer(buf_name: &String, buf_text: &String) -> Result<()> {
-    let conf: Config = match get_config(Path::new(DFT_CONF_PATH)) {
+    let conf: Config = match get_config(Path::new(&get_dft_conf())) {
         Ok(c) => c,
         Err(_) => return Err(GitActionError),
     };
 
     let buf_path_str = format!(
-        "{}/text/buffers/{}",
+        "{}/{}/{}",
         conf.local_dir,
-        buf_name
+        conf.buffer_dir_rel,
+        buf_name,
     );
     let buf_path = Path::new(&buf_path_str);
 
@@ -183,7 +189,7 @@ pub fn modify_buffer(buf_name: &String, buf_text: &String) -> Result<()> {
 }
 
 pub fn add_buffer(buf_name: &String, repo: &Repository) -> Result<()> {
-    let conf: Config = match get_config(Path::new(DFT_CONF_PATH)) {
+    let conf: Config = match get_config(Path::new(&get_dft_conf())) {
         Ok(c) => c,
         Err(_) => return Err(GitActionError),
     };
@@ -194,9 +200,10 @@ pub fn add_buffer(buf_name: &String, repo: &Repository) -> Result<()> {
     };
 
     let buf_path_str = format!(
-        "{}/text/buffers/{}",
+        "{}/{}/{}",
         conf.local_dir,
-        conf.buffer_dir_rel.
+        conf.buffer_dir_rel,
+        buf_name,
     );
 
     let buf_path = Path::new(&buf_path_str);
@@ -210,7 +217,7 @@ pub fn add_buffer(buf_name: &String, repo: &Repository) -> Result<()> {
 pub fn commit_buffer(repo: &Repository) -> Result<()> {
     // Inspired by https://github.com/rust-lang/git2-rs/issues/561
     // Should look at replacing match statemnts with some sort of macro
-    let index = match repo.index() { 
+    let mut index = match repo.index() { 
         Ok(i) => i,
         Err(_) => return Err(GitActionError),
     };
@@ -257,33 +264,56 @@ mod tests {
     // I.e. they will all always pass because they cannot actually check the git operations
     // Checking is best done with git log and looking at the repo itself (or checking its there)
 
-    use crate::git_management::{clone_repo, open_repo, modify_buffer, add_buffer, commit_buffer};
+    use crate::git_management::{clone_repo, open_repo, modify_buffer, add_buffer, commit_buffer, get_dft_conf};
     use std::path::Path;
+    use std::fs::File;
+    use std::io::Write;
+    use std::env;
+
+    fn write_test_config() {
+        let test_config_toml = format!(r#"
+            url = 'git@github.com:boomerlen/text-upload.git'
+            local_dir = '/tmp/test-simple-text'
+            branch = 'test-branch'
+            buffer_dir_rel = 'test-buffers'
+            ssh_file = '{}/.ssh/id_rsa.pub'
+        "#, env::var("HOME").unwrap());
+
+        let text = get_dft_conf();
+        let config_path = Path::new(&text);
+        let mut file: File = File::create(&config_path).unwrap();
+
+        file.write_all(test_config_toml.as_bytes()).unwrap();
+    }
 
     #[test]
     fn test_clone_repo() {
-        let repo_dir = Path::new("/tmp/test_mono");
-        clone_repo(repo_dir);
+        write_test_config();
+        clone_repo();
     } 
 
     #[test]
     fn find_local_repo() {
-        let repo = open_repo();
+        write_test_config();
+        let repo = open_repo().unwrap();
         assert!(!repo.is_empty().unwrap());
     }
 
     #[test]
     fn test_modify_buffer() {
+        write_test_config();
         assert!(true);
     }
 
     #[test]
     fn test_add() {
+        write_test_config();
         assert!(true);
     }
 
     #[test]
     fn test_commit() {
+        write_test_config();
         assert!(true);
     }
 }

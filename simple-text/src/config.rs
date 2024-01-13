@@ -38,10 +38,10 @@ pub fn get_config(conf_file: &Path) -> Result<Config, std::io::Error> {
 }
 
 mod tests {
-    use crate::config::Config;
-    use std::fs::File;
-    use std::io::Write;
-    use std::path::Path;
+    // use crate::config::Config;
+    // use std::fs::File;
+    // use std::io::Write;
+    // use std::path::Path;
 
     #[test]
     fn test_parse_config() {

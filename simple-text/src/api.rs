@@ -3,7 +3,6 @@ use git2::Repository;
 use serde::Deserialize;
 
 use crate::git_management::{add_buffer, commit_buffer, modify_buffer, open_repo, push_to_repo, get_now};
-use crate::config::Config;
 
 
 #[derive(Deserialize)]
@@ -31,18 +30,34 @@ async fn upload_text(req_body: web::Json<PostBody>) -> impl Responder {
     let buf_name = resolve_buffer(&req_body.buffer);
     let buf_text = &req_body.text;
 
-    let repo: Repository = open_repo();
+    let repo: Repository = match open_repo() {
+        Ok(r) => r,
+        Err(_) => return HttpResponse::InternalServerError().body("Oopen repo failed."),
+    };
 
-    modify_buffer(&buf_name, buf_text);
-    add_buffer(&buf_name, &repo);
-    commit_buffer(&repo);
-    push_to_repo(&repo);
+    match modify_buffer(&buf_name, buf_text) {
+        Ok(_) => (),
+        Err(_) => return HttpResponse::InternalServerError().body("Modify buffer failed."),
+    };
 
-    HttpResponse::Ok().body("ok!")
+    match add_buffer(&buf_name, &repo) {
+        Ok(_) => (),
+        Err(_) => return HttpResponse::InternalServerError().body("Add buffer failed."),
+    };
+
+    match commit_buffer(&repo) {
+        Ok(_) => (),
+        Err(_) => return HttpResponse::InternalServerError().body("Commit buffer failed."),
+    };
+
+    match push_to_repo(&repo) {
+        Ok(_) => HttpResponse::Ok().body("Success!"),
+        Err(_) => HttpResponse::InternalServerError().body("Push failed."),
+    }
 }
 
 async fn basic_get() -> impl Responder {
-    HttpResponse::Ok().body("GET Received!")
+    HttpResponse::Ok().body("GET Received! Hello world!")
 }
 
 pub fn config_simple_text(cfg: &mut web::ServiceConfig) {
