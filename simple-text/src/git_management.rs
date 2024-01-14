@@ -1,11 +1,11 @@
-use std::fs::OpenOptions;
+use std::fs::{OpenOptions, create_dir_all};
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 use std::env;
 use chrono::{Local};
 
-use git2::{BranchType, Cred, PushOptions, Remote, RemoteCallbacks, Repository, Signature, Tree};
+use git2::{Cred, PushOptions, Remote, RemoteCallbacks, Repository, Signature, Tree};
 
 use crate::config::{Config, get_config, DFT_CONF_PATH};
 
@@ -13,18 +13,32 @@ use crate::config::{Config, get_config, DFT_CONF_PATH};
 // Using this type loses original error origin. Should fix
 type Result<T> = std::result::Result<T, git2::Error>;
 
-fn decrypt(file: &Path) {
-    Command::new("unscramble ")
-    .args([file.as_os_str()])
-    .output()
-    .expect("Could not unscramble");
+fn decrypt(file: &Path) -> Result<()> {
+    let full_path = match file.canonicalize() {
+        Ok(p) => p,
+        Err(e) => return Err(git2::Error::from_str(format!("Failed to canonicalise path: {:?} with error: {}", file, e.to_string()).as_str())),
+    };
+    match Command::new("unscramble")
+    .args([full_path.as_os_str()])
+    .env("PATH", env::var("PATH").unwrap_or("".to_string()))
+    .output() {
+        Ok(_) => Ok(()),
+        Err(e) => Err(git2::Error::from_str(format!("Failed to decrypt buffer with error: {}.", e.to_string()).as_str()))
+    }
 }
 
-fn encrypt(file: &Path) {
-    Command::new("scramble ")
-    .args([file.as_os_str()])
-    .output()
-    .expect("Could not unscramble");
+fn encrypt(file: &Path) -> Result<()> {
+    let full_path = match file.canonicalize() {
+        Ok(p) => p,
+        Err(e) => return Err(git2::Error::from_str(format!("Failed to canonicalise path: {:?} with error: {}", file, e.to_string()).as_str())),
+    };
+    match Command::new("scramble")
+    .args([full_path.as_os_str()])
+    .env("PATH", env::var("PATH").unwrap_or("".to_string()))
+    .output() {
+        Ok(_) => Ok(()),
+        Err(e) => Err(git2::Error::from_str(format!("Failed to encrypt buffer with error: {}.", e.to_string()).as_str()))
+    }
 }
 
 pub fn get_dft_conf() -> String {
@@ -107,13 +121,34 @@ pub fn open_repo() -> Result<Repository> {
         Err(_) => clone_repo()?,
     };
 
-    // Ensure branch is correct
-    repo.find_branch(&conf.branch, BranchType::Remote)?;
 
-    // Change head before this
-    repo.set_head(&conf.branch)?;
-    repo.checkout_head(None)?;
+    {
+        // Check current head
+        let curr_head = repo.head()?;
+        let curr_head_name = match curr_head.name() {
+            Some(n) => n,
+            None => return Err(git2::Error::from_str("Could not get name of current HEAD.")),
+        };
 
+        if curr_head_name != format!("refs/heads/{}", &conf.branch).as_str() {
+            // Checkout
+            let reference = repo.find_reference(format!("refs/remotes/origin/{}", conf.branch).as_str())?;
+            let commit = repo.reference_to_annotated_commit(&reference)?;
+
+            let branch = repo.branch_from_annotated_commit(&conf.branch, &commit, false)?;
+            
+            let branch_name = match branch.get().name() {
+                Some(n) => n,
+                None => return Err(git2::Error::from_str("Could not get branch name from reference.")),
+            };
+
+            let obj = repo.revparse_single(branch_name)?;
+
+            // Change head and checkout tree
+            repo.checkout_tree(&obj, None)?;
+            repo.set_head(branch_name)?;
+        }
+    }
     Ok(repo)
 }
 
@@ -128,21 +163,43 @@ pub fn modify_buffer(buf_name: &String, buf_text: &String) -> Result<()> {
     );
     let buf_path = Path::new(&buf_path_str);
 
-    decrypt(buf_path);
+    if match buf_path.try_exists() {
+        Ok(b) => b,
+        Err(e) => return Err(git2::Error::from_str(format!("Buffer lookup failed with text: {}.", e.to_string()).as_str())),
+    } {
+        decrypt(buf_path)?;
+    } else {
+        let parent = match buf_path.parent() {
+            Some(p) => p,
+            None => return Err(git2::Error::from_str("Could not get parents of buffer file.")),
+        };
+        if match parent.try_exists() {
+            Ok(b) => b,
+            Err(e) => return Err(git2::Error::from_str(format!("Buffer parent lookup failed with text: {}.", e.to_string()).as_str())),
+        } {
+            // Create parent dir
+            match create_dir_all(parent) {
+                Ok(_) => (),
+                Err(e) => return Err(git2::Error::from_str(format!("Could not create parent dir. Error text: {}.", e.to_string()).as_str())),
+            }
+        }
+    }
+
 
     let mut file = match OpenOptions::new()
         .append(true)
+        .create(true)
         .open(buf_path) {
             Ok(f) => f,
-            Err(_) => return Err(git2::Error::from_str("Failed to open buffer.")),
+            Err(e) => return Err(git2::Error::from_str(format!("Failed to open buffer ({:?}) with error text: {}.", buf_path, e.to_string()).as_str())),
         };
 
     match file.write(&format!("\n{}\n", buf_text).as_bytes()) {
         Ok(_) => (),
-        Err(_) => return Err(git2::Error::from_str("Failed to write to buffer.")),
+        Err(e) => return Err(git2::Error::from_str(format!("Failed to write to buffer ({:?}) with error text: {}.", buf_path,  e.to_string()).as_str())),
     }
 
-    encrypt(buf_path);
+    encrypt(buf_path)?;
 
     Ok(())
 }
@@ -153,14 +210,14 @@ pub fn add_buffer(buf_name: &String, repo: &Repository) -> Result<()> {
     let mut index = repo.index()?;
 
     let buf_path_str = format!(
-        "{}/{}/{}",
-        conf.local_dir,
+        "{}/{}",
         conf.buffer_dir_rel,
         buf_name,
     );
 
     let buf_path = Path::new(&buf_path_str);
     index.add_path(buf_path)?;
+    index.write()?;
 
     Ok(())
 }
@@ -212,7 +269,7 @@ mod tests {
             local_dir = '/tmp/test-simple-text'
             branch = 'test-branch'
             buffer_dir_rel = 'test-buffers'
-            ssh_file = '{}/.ssh/id_rsa.pub'
+            ssh_file = '{}/.ssh/id_rsa'
         "#, env::var("HOME").unwrap());
 
         let text = get_dft_conf();
@@ -238,7 +295,9 @@ mod tests {
     #[test]
     fn test_modify_buffer_new() {
         write_test_config();
-        let buf_name = String::from("sample_new_buffer");
+        // Note that buffer parsing is handled by api.rs
+        // Tests for that should go there
+        let buf_name = String::from("sample_new_buffer.md");
         let buf_text = String::from("new added text!");
         modify_buffer(&buf_name, &buf_text).unwrap()
     }
@@ -246,15 +305,16 @@ mod tests {
     #[test]
     fn test_modify_buffer_existing() {
         write_test_config();
-        let buf_name = String::from("Places");
+        let buf_name = String::from("places.md");
         let buf_text = String::from("extra text!");
         modify_buffer(&buf_name, &buf_text).unwrap();
     }
 
     #[test]
     fn test_add() {
+        // Only still broken operation
         write_test_config();
-        let buf_name = String::from("Places");
+        let buf_name = String::from("places.md");
         let repo = open_repo().unwrap();
         add_buffer(&buf_name, &repo).unwrap();
     }
